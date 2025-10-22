@@ -1,5 +1,5 @@
 # BitcoinSimple
-The "Swiss Army knife" for BTC data.
+The Swiss Army knife for BTC data.
 
 ## Endpoints
 
@@ -148,4 +148,5 @@ Sample Response:
   "mempool_size_mb": 45.2,
   "timestamp": "2025-10-22T12:00:00Z"
 }
+
 ```
