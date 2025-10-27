@@ -1,4 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Request
+# from fastapi.staticfiles import StaticFiles
+# from fastapi.openapi.docs import get_swagger_ui_html
+# from starlette.responses import HTMLResponse
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from pycoingecko import CoinGeckoAPI
@@ -6,24 +9,58 @@ import requests
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from redislite import Redis
+from redis import Redis
 import json
+import os
+from dotenv import load_dotenv
 
-app = FastAPI(title="Simple BTC API", description="Dead simple Bitcoin data—prices, balances, txs, and more.")
+load_dotenv()  # Load environment variables
 
-# Rate limiter (in-memory)
+app = FastAPI(
+    title="BitcoinSimple API",
+    description="The Swiss Army knife for BTC data.",
+    # swagger_ui_parameters={
+    #     "defaultModelsExpandDepth": -1,  # Hide schemas for cleaner UI
+    #     "tryItOutEnabled": True,  # Enable "Try it out" by default
+    #     # "customCSSUrl": "/static/swagger.css"  # Link to custom CSS
+    #     "customCSS": "./static/custom_swagger.css"  # Link to custom CSS
+    # }
+)
+
+# Run app with command: uvicorn btc1:app --reload
+
+# Mount static files for serving CSS
+# app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Rate limiter (in-memory or Redis-backed)
 limiter = Limiter(key_func=get_remote_address, default_limits=["100/15minutes"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Initialize RedisLite
-redis_client = Redis('/home/yourusername/redis.db')  # Adjust for PythonAnywhere
+# Initialize Redis client for external Redis server
+redis_client = Redis(
+    host=os.getenv('REDIS_HOST'),
+    port=int(os.getenv('REDIS_PORT')),
+    password=os.getenv('REDIS_PASSWORD'),
+    decode_responses=True,  # Returns strings instead of bytes for easier handling
+    ssl=False, # Enable SSL if required by your Redis provider (e.g., Redis Enterprise Cloud)
+    # ssl_cert_reqs='required',  # Enforce certificate validation
+    # ssl_min_version=ssl.TLSVersion.TLSv1_2  # Force TLS 1.2
+)
 
 cg = CoinGeckoAPI()
 HALVING_INTERVAL = 210000
 BLOCK_TIME_MIN = 10
 
 def iso_now(): return datetime.utcnow().isoformat() + "Z"
+
+# @app.get("/docs", include_in_schema=False)
+# async def custom_swagger_ui_html() -> HTMLResponse:
+#     return get_swagger_ui_html(
+#         openapi_url=app.openapi_url,
+#         title=app.title + " - Swagger UI",
+#         swagger_css_url="/static/custom_swagger.css",  # Your custom CSS file
+#     )
 
 @app.get("/")
 def root():
@@ -38,12 +75,12 @@ def root():
 # Price
 @app.get("/price")
 @limiter.limit("100/15minutes")
-async def get_price_default():
-    return await get_price("usd")
+async def get_price_default(request: Request):
+    return await get_price("usd", request)
 
 @app.get("/price/{fiat}")
 @limiter.limit("100/15minutes")
-async def get_price(fiat: str):
+async def get_price(fiat: str, request: Request):
     cache_key = f"price:{fiat.lower()}"
     cached = redis_client.get(cache_key)
     if cached:
@@ -72,7 +109,7 @@ class BalanceResponse(BaseModel):
 
 @app.get("/balance/{address}", response_model=BalanceResponse)
 @limiter.limit("100/15minutes")
-async def get_balance(address: str):
+async def get_balance(address: str, request: Request):
     try:
         resp = requests.get(f"https://blockstream.info/api/address/{address}", timeout=5)
         resp.raise_for_status()
@@ -100,13 +137,19 @@ class TxResponse(BaseModel):
 
 @app.get("/tx/{txid}", response_model=TxResponse)
 @limiter.limit("100/15minutes")
-async def get_tx(txid: str):
+async def get_tx(txid: str, request: Request):
     try:
         resp = requests.get(f"https://blockstream.info/api/tx/{txid}", timeout=5)
         resp.raise_for_status()
         data = resp.json()
         status = data["status"]
-        confirmations = status.get("block_height", 0) - data.get("latest_height", status["block_height"]) + 1 if status["confirmed"] else 0
+        if status["confirmed"]:
+            tip_resp = requests.get("https://blockstream.info/api/blocks/tip/height", timeout=5)
+            tip_resp.raise_for_status()
+            tip_height = int(tip_resp.text)
+            confirmations = tip_height - status["block_height"] + 1
+        else:
+            confirmations = 0
         value_sats = sum(vout["value"] for vout in data["vout"])
         return TxResponse(
             txid=txid,
@@ -130,7 +173,7 @@ class BlockResponse(BaseModel):
 
 @app.get("/block/{height}", response_model=BlockResponse)
 @limiter.limit("100/15minutes")
-async def get_block(height: int):
+async def get_block(height: int, request: Request):
     cache_key = f"block:height:{height}"
     cached = redis_client.get(cache_key)
     if cached:
@@ -158,7 +201,7 @@ async def get_block(height: int):
 
 @app.get("/block/{hash}", response_model=BlockResponse)
 @limiter.limit("100/15minutes")
-async def get_block_by_hash(hash: str):
+async def get_block_by_hash(hash: str, request: Request):
     cache_key = f"block:hash:{hash}"
     cached = redis_client.get(cache_key)
     if cached:
@@ -191,12 +234,163 @@ class StatsResponse(BaseModel):
 
 @app.get("/stats", response_model=StatsResponse)
 @limiter.limit("100/15minutes")
-async def get_stats():
+async def get_stats(request: Request):
     cache_key = "stats"
     cached = redis_client.get(cache_key)
     if cached:
         return json.loads(cached)
     try:
         coin_data = cg.get_coin_by_id('bitcoin', localization=False, tickers=False, market_data=True, community_data=False, developer_data=False, sparkline=False)
-        hr_resp = requests.get("https://api.blockchain.info/charts/hash-rate?timespan=1days&format=json", timeout=5)
-        diff_resp = requests.get("https://api.blockchain.info/charts/difficulty?timespan=1days&format=json", timeout=
+        hr_resp = requests.get("https://api.blockchain.info/charts/hash-rate", timeout=5)
+        diff_resp = requests.get("https://api.blockchain.info/charts/difficulty", timeout=5)
+        hr_resp.raise_for_status()
+        diff_resp.raise_for_status()
+        hr_data = hr_resp.json()
+        diff_data = diff_resp.json()
+        hashrate = hr_data['values'][-1]['y']
+        difficulty = diff_data['values'][-1]['y']
+        circulating_supply = coin_data['market_data']['circulating_supply']
+        mempool_resp = requests.get("https://blockstream.info/api/mempool", timeout=5)
+        mempool_resp.raise_for_status()
+        mempool_data = mempool_resp.json()
+        mempool_size_mb = mempool_data['vsize'] / 1e6
+        response = StatsResponse(
+            hashrate_th_s=hashrate,
+            difficulty=difficulty,
+            circulating_supply_btc=circulating_supply,
+            mempool_size_mb=mempool_size_mb,
+            timestamp=iso_now()
+        )
+        redis_client.setex(cache_key, 60, json.dumps(response.dict()))
+        return response
+    except requests.RequestException:
+        raise HTTPException(500, "Error fetching stats")
+
+# Historical Price
+class HistoricalPriceResponse(BaseModel):
+    date: str
+    price_usd: float
+    market_cap_usd: float
+    volume_usd: float
+
+@app.get("/historical/price", response_model=HistoricalPriceResponse)
+@limiter.limit("100/15minutes")
+async def get_historical_price(request: Request, date: str = Query(..., description="Date in YYYY-MM-DD")):  # Reordered parameters
+    try:
+        dt = datetime.fromisoformat(date)
+        date_cg = dt.strftime("%d-%m-%Y")
+    except ValueError:
+        raise HTTPException(400, "Invalid date format. Use YYYY-MM-DD")
+    cache_key = f"historical_price:{date}"
+    cached = redis_client.get(cache_key)
+    if cached:
+        return json.loads(cached)
+    try:
+        data = cg.get_coin_history_by_id('bitcoin', date=date_cg, localization=False)
+        md = data['market_data']
+        response = HistoricalPriceResponse(
+            date=date,
+            price_usd=md['current_price']['usd'],
+            market_cap_usd=md['market_cap']['usd'],
+            volume_usd=md['total_volume']['usd']
+        )
+        redis_client.setex(cache_key, 86400, json.dumps(response.dict()))
+        return response
+    except Exception as e:
+        raise HTTPException(500, f"Error fetching historical data: {str(e)}")
+
+# Mempool
+class FeeHistogramEntry(BaseModel):
+    fee_rate: float
+    vsize: int
+
+class MempoolResponse(BaseModel):
+    count: int
+    vsize: int
+    total_fee_btc: float
+    fee_histogram: list[FeeHistogramEntry]
+
+@app.get("/mempool", response_model=MempoolResponse)
+@limiter.limit("100/15minutes")
+async def get_mempool(request: Request):
+    cache_key = "mempool"
+    cached = redis_client.get(cache_key)
+    if cached:
+        return json.loads(cached)
+    try:
+        resp = requests.get("https://blockstream.info/api/mempool", timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        response = MempoolResponse(
+            count=data['count'],
+            vsize=data['vsize'],
+            total_fee_btc=data['total_fee'] / 1e8,
+            fee_histogram=[FeeHistogramEntry(fee_rate=entry[0], vsize=entry[1]) for entry in data.get('fee_histogram', [])]
+        )
+        redis_client.setex(cache_key, 10, json.dumps(response.dict()))
+        return response
+    except requests.RequestException:
+        raise HTTPException(500, "Error fetching mempool data")
+
+# Halving
+class HalvingResponse(BaseModel):
+    current_reward_btc: float
+    next_halving_block: int
+    blocks_remaining: int
+    estimated_date: str
+
+@app.get("/halving", response_model=HalvingResponse)
+@limiter.limit("100/15minutes")
+async def get_halving(request: Request):
+    cache_key = "halving"
+    cached = redis_client.get(cache_key)
+    if cached:
+        return json.loads(cached)
+    try:
+        tip_resp = requests.get("https://blockstream.info/api/blocks/tip/height", timeout=5)
+        tip_resp.raise_for_status()
+        current_height = int(tip_resp.text)
+        epoch = current_height // HALVING_INTERVAL
+        current_reward = 50 / (2 ** epoch)
+        next_halving = (epoch + 1) * HALVING_INTERVAL
+        blocks_remaining = next_halving - current_height
+        estimated_eta = datetime.utcnow() + timedelta(minutes=blocks_remaining * BLOCK_TIME_MIN)
+        response = HalvingResponse(
+            current_reward_btc=current_reward,
+            next_halving_block=next_halving,
+            blocks_remaining=blocks_remaining,
+            estimated_date=estimated_eta.isoformat() + "Z"
+        )
+        redis_client.setex(cache_key, 600, json.dumps(response.dict()))
+        return response
+    except requests.RequestException:
+        raise HTTPException(500, "Error fetching halving data")
+
+# Fees
+class FeesResponse(BaseModel):
+    fastest_sat_vb: float
+    half_hour_sat_vb: float
+    hour_sat_vb: float
+    minimum_sat_vb: float
+
+@app.get("/fees", response_model=FeesResponse)
+@limiter.limit("100/15minutes")
+async def get_fees(request: Request):
+    cache_key = "fees"
+    cached = redis_client.get(cache_key)
+    if cached:
+        return json.loads(cached)
+    try:
+        resp = requests.get("https://blockstream.info/api/fee-estimates", timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        response = FeesResponse(
+            fastest_sat_vb=data.get("1", 0),
+            half_hour_sat_vb=data.get("3", 0),
+            hour_sat_vb=data.get("6", 0),
+            minimum_sat_vb=data.get("144", 0)
+        )
+        redis_client.setex(cache_key, 60, json.dumps(response.dict()))
+        return response
+    except requests.RequestException:
+        raise HTTPException(500, "Error fetching fee estimates")

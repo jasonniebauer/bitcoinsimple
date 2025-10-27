@@ -1,0 +1,67 @@
+/* static/swagger.css */
+.topbar {
+    background-color: #F7931A !important; /* Bitcoin orange */
+    border-bottom: 2px solid #FFB119; /* Gold accent */
+}
+
+.swagger-ui .topbar a {
+    color: #FFFFFF !important; /* White text for logo */
+}
+
+.swagger-ui .btn {
+    background-color: #F7931A !important; /* Orange buttons */
+    color: #FFFFFF !important;
+    border-color: #FFB119 !important;
+}
+
+.swagger-ui .btn:hover {
+    background-color: #FFB119 !important; /* Gold on hover */
+}
+
+.swagger-ui .opblock-tag {
+    background-color: #333333 !important; /* Dark gray for endpoint tags */
+    color: #FFFFFF !important;
+}
+
+.swagger-ui .opblock {
+    border-color: #CCCCCC !important; /* Light gray borders */
+}
+
+.swagger-ui .opblock-summary {
+    background-color: #FFFFFF !important; /* White background for endpoints */
+}
+
+.swagger-ui .opblock-summary-method {
+    background-color: #F7931A !important; /* Orange for HTTP methods */
+    color: #FFFFFF !important;
+}
+
+.swagger-ui .response-col_status {
+    color: #333333 !important; /* Dark gray for status codes */
+}
+
+.swagger-ui .info .title {
+    color: #F7931A !important; /* Orange for API title */
+}
+
+.swagger-ui .info .description {
+    color: #333333 !important; /* Dark gray for description */
+}
+
+.swagger-ui .try-out__btn {
+    background-color: #F7931A !important; /* Orange for "Try it out" */
+    color: #FFFFFF !important;
+}
+
+.swagger-ui .try-out__btn:hover {
+    background-color: #FFB119 !important; /* Gold on hover */
+}
+
+.swagger-ui .response-control-media-type__accept-message {
+    color: #333333 !important; /* Dark gray for response messages */
+}
+
+.swagger-ui .markdown code {
+    background-color: #CCCCCC !important; /* Light gray for code blocks */
+    color: #333333 !important;
+}
