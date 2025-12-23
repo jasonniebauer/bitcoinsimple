@@ -1,9 +1,10 @@
+from api_analytics.fastapi import Analytics
 from fastapi import FastAPI, HTTPException, Query, Request
-# from fastapi.staticfiles import StaticFiles
-# from fastapi.openapi.docs import get_swagger_ui_html
-# from starlette.responses import HTMLResponse
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from datetime import datetime, timedelta
+from pathlib import Path
 from pycoingecko import CoinGeckoAPI
 import requests
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -14,23 +15,33 @@ import json
 import os
 from dotenv import load_dotenv
 
-load_dotenv()  # Load environment variables
+# Load environment variables from .env file
+load_dotenv()
 
 app = FastAPI(
     title="BitcoinSimple API",
     description="The Swiss Army knife for BTC data.",
-    # swagger_ui_parameters={
-    #     "defaultModelsExpandDepth": -1,  # Hide schemas for cleaner UI
-    #     "tryItOutEnabled": True,  # Enable "Try it out" by default
-    #     # "customCSSUrl": "/static/swagger.css"  # Link to custom CSS
-    #     "customCSS": "./static/custom_swagger.css"  # Link to custom CSS
-    # }
+    version="0.1.0-beta",
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
-# Run app with command: uvicorn btc1:app --reload
+# Add FastAPI Analytics middleware with API key
+app.add_middleware(Analytics, api_key=os.getenv("ANALYTICS_KEY") )
 
-# Mount static files for serving CSS
-# app.mount("/static", StaticFiles(directory="static"), name="static")
+# Robust INDEX_PATH: Start from cwd, fallback to __file__ if needed
+base_path = Path.cwd()
+INDEX_PATH = base_path / "public" / "static" / "index.html"
+
+# Fallback if cwd fails (rare in Vercel)
+if not INDEX_PATH.exists():
+    INDEX_PATH = Path(__file__).parent / "public" / "static" / "index.html"
+
+# Conditional mount
+static_dir = base_path / "public" / "static"
+if static_dir.exists() and os.getenv("VERCEL") is None:
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/static", StaticFiles(directory="public/static", html=True), name="static")
 
 # Rate limiter (in-memory or Redis-backed)
 limiter = Limiter(key_func=get_remote_address, default_limits=["100/15minutes"])
@@ -48,27 +59,40 @@ redis_client = Redis(
     # ssl_min_version=ssl.TLSVersion.TLSv1_2  # Force TLS 1.2
 )
 
-cg = CoinGeckoAPI()
+coingecko_api = CoinGeckoAPI()
 HALVING_INTERVAL = 210000
 BLOCK_TIME_MIN = 10
 
 def iso_now(): return datetime.utcnow().isoformat() + "Z"
 
-# @app.get("/docs", include_in_schema=False)
-# async def custom_swagger_ui_html() -> HTMLResponse:
-#     return get_swagger_ui_html(
-#         openapi_url=app.openapi_url,
-#         title=app.title + " - Swagger UI",
-#         swagger_css_url="/static/custom_swagger.css",  # Your custom CSS file
-#     )
-
 @app.get("/")
-def root():
+async def read_root():
+    if INDEX_PATH.exists():
+        with open(INDEX_PATH, "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
+    else:
+        # Fallback if file doesn't exist
+        return HTMLResponse(
+            content="<h1>File not found!</h1><p>Please try again.</p>",
+            status_code=404
+        )
+
+@app.get("/endpoints")
+def get_endpoints():
     return {
         "endpoints": [
-            "/price", "/price/{fiat}", "/balance/{address}", "/tx/{txid}",
-            "/block/{height}", "/block/{hash}", "/stats", "/historical/price?date=YYYY-MM-DD",
-            "/mempool", "/halving", "/fees"
+            "/price",
+            "/price/{fiat}",
+            "/balance/{address}",
+            "/tx/{txid}",
+            "/block/{height}",
+            "/block/{hash}",
+            "/stats",
+            "/historical/price?date=YYYY-MM-DD",
+            "/mempool",
+            "/halving",
+            "/fees"
         ]
     }
 
@@ -86,7 +110,7 @@ async def get_price(fiat: str, request: Request):
     if cached:
         return json.loads(cached)
     try:
-        data = cg.get_price(ids='bitcoin', vs_currencies=fiat, include_24hr_change=True)
+        data = coingecko_api.get_price(ids='bitcoin', vs_currencies=fiat, include_24hr_change=True)
         price_key = fiat.lower()
         response = {
             f"price_{price_key}": data['bitcoin'][price_key],
@@ -115,7 +139,7 @@ async def get_balance(address: str, request: Request):
         resp.raise_for_status()
         data = resp.json()
         balance_sats = data["chain_stats"]["funded_txo_sum"] - data["chain_stats"]["spent_txo_sum"]
-        price = cg.get_price(ids='bitcoin', vs_currencies='usd')['bitcoin']['usd']
+        price = coingecko_api.get_price(ids='bitcoin', vs_currencies='usd')['bitcoin']['usd']
         return BalanceResponse(
             address=address,
             balance_btc=balance_sats / 1e8,
@@ -240,7 +264,7 @@ async def get_stats(request: Request):
     if cached:
         return json.loads(cached)
     try:
-        coin_data = cg.get_coin_by_id('bitcoin', localization=False, tickers=False, market_data=True, community_data=False, developer_data=False, sparkline=False)
+        coin_data = coingecko_api.get_coin_by_id('bitcoin', localization=False, tickers=False, market_data=True, community_data=False, developer_data=False, sparkline=False)
         hr_resp = requests.get("https://api.blockchain.info/charts/hash-rate", timeout=5)
         diff_resp = requests.get("https://api.blockchain.info/charts/difficulty", timeout=5)
         hr_resp.raise_for_status()
@@ -278,7 +302,7 @@ class HistoricalPriceResponse(BaseModel):
 async def get_historical_price(request: Request, date: str = Query(..., description="Date in YYYY-MM-DD")):  # Reordered parameters
     try:
         dt = datetime.fromisoformat(date)
-        date_cg = dt.strftime("%d-%m-%Y")
+        date_coingecko_api = dt.strftime("%d-%m-%Y")
     except ValueError:
         raise HTTPException(400, "Invalid date format. Use YYYY-MM-DD")
     cache_key = f"historical_price:{date}"
@@ -286,7 +310,7 @@ async def get_historical_price(request: Request, date: str = Query(..., descript
     if cached:
         return json.loads(cached)
     try:
-        data = cg.get_coin_history_by_id('bitcoin', date=date_cg, localization=False)
+        data = coingecko_api.get_coin_history_by_id('bitcoin', date=date_coingecko_api, localization=False)
         md = data['market_data']
         response = HistoricalPriceResponse(
             date=date,

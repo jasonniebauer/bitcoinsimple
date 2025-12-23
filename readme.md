@@ -1,4 +1,4 @@
-# BitcoinSimple
+# [BitcoinSimple](https://bitcoinsimple.info/)
 The Swiss Army knife for BTC data.
 
 ## Endpoints
