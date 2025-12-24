@@ -20,8 +20,8 @@
       "destination": "/public/static/$1"
     },
     {
-      "source": "/favicon.ico",
-      "destination": "/public/static/assets/favicon.ico"
+      "source": "/bitcoin.png",
+      "destination": "/public/static/assets/bitcoin.png"
     },
     {
       "source": "/",
