@@ -2,38 +2,30 @@
   "version": 2,
   "builds": [
     {
-      "src": "btc1.py",
-      "use": "@vercel/python"
-    },
-    {
       "src": "public/**",
       "use": "@vercel/static"
+    },
+    {
+      "src": "btc1.py",
+      "use": "@vercel/python"
     }
   ],
-  "rewrites": [
+  "routes": [
     {
-      "source": "/public/(.*)",
-      "destination": "/public/$1"
+      "src": "/public/(.*)",
+      "dest": "/public/$1"
     },
     {
-      "source": "/static/(.*)",
-      "destination": "/public/static/$1"
+      "src": "/static/(.*)",
+      "dest": "/public/static/$1"
     },
     {
-      "source": "/bitcoin.png",
-      "destination": "/public/static/assets/bitcoin.png"
+      "src": "/bitcoin.png",
+      "dest": "/public/static/assets/bitcoin.png"
     },
     {
-      "source": "/",
-      "destination": "/public/static/index.html"
-    },
-    {
-      "source": "/api/(.*)",
-      "destination": "/main.py"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/main.py"
+      "src": "/(.*)",
+      "dest": "/btc1.py"
     }
   ],
   "headers": [
